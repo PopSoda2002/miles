@@ -38,21 +38,38 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
 
     samples = data_buffer.get_samples(args.rollout_batch_size)
 
-    for i, sample in enumerate(samples):
-        (sample,) = sample
-        messages = sample.prompt
-        token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(messages)
-        response_length = MASK_GENERATOR.get_response_lengths([loss_mask])[0]
+    print(f"sft_rollout::generate_rollout samples shape: {len(samples)}, {len(samples[0])}")
 
-        sample.tokens = token_ids
-        sample.response_length = response_length
-        sample.reward = 0
-        sample.loss_mask = loss_mask[-response_length:]
+    for i, sample_group in enumerate(samples):
+        # Handle the case where samples is a list of lists (grouped by prompt)
+        # SFT usually has n_samples_per_prompt=1, but if >1, we process all duplicates
+        group_items = sample_group if isinstance(sample_group, list) else [sample_group]
+        
+        for sample in group_items:
+            messages = sample.prompt
+            if isinstance(messages, (list, tuple)) or hasattr(messages, "tolist"):
+                if hasattr(messages, "tolist"):
+                    messages = messages.tolist()
+                else:
+                    messages = list(messages)
+            
+            # Append the label/response to the messages
+            full_messages = messages + [{"role": "assistant", "content": sample.label}]
+            
+            # print(f"sft_rollout::generate_rollout full_messages: {full_messages}")
+            token_ids, loss_mask = MASK_GENERATOR.get_loss_mask(full_messages)
+            response_length = MASK_GENERATOR.get_response_lengths([loss_mask])[0]
 
-        if i == 0 and not SAMPLE_PRINTED:
-            logger.info(
-                f"sft_rollout::generate_rollout example data: {sample=} (raw){messages=} (raw){token_ids=} (raw){loss_mask=} {response_length=}"
-            )
-            SAMPLE_PRINTED = True
+            sample.tokens = token_ids
+            sample.response_length = response_length
+            sample.reward = 0
+            # Handle case where response_length is 0 to avoid getting the whole list
+            sample.loss_mask = loss_mask[-response_length:] if response_length > 0 else []
+
+            if i == 0 and not SAMPLE_PRINTED:
+                logger.info(
+                    f"sft_rollout::generate_rollout example data: {sample=} (raw){messages=} (raw){token_ids=} (raw){loss_mask=} {response_length=}"
+                )
+                SAMPLE_PRINTED = True
 
     return samples
